@@ -146,6 +146,10 @@ private:
     std::unordered_map<std::wstring, ComPtr<ID3DBlob>> mShaders;
     std::unordered_map<std::wstring, ComPtr<ID3D12PipelineState>> mPSOs;
 
+    int mMaxSrvHeapSize = 0;
+    int mMaxMaterialNumber = 0;
+    int mMaxRenderItemNumber = 0;
+
     std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
 
     RenderItem* mWavesRItem = nullptr;
@@ -214,6 +218,18 @@ private:
     void BuildMaterials();
     void BuildRenderItems();
     void DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*>& rItems);
+
+    void AddTexture(DDS_TEXTURE& texture);
+    void AddMaterial(LPCWSTR name, LPCWSTR diffuseTexture, DirectXHelper::MaterialConstants& matConst);
+    RenderItem* AddRenderItem(
+        RenderLayer layer,
+        LPCWSTR geometry,
+        LPCWSTR subgeometry,
+        LPCWSTR material,
+        float4x4& worldTransform,
+        float4x4& textureTransform,
+        D3D12_PRIMITIVE_TOPOLOGY primitiveType = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST
+    );
 };
 
 StencilApp::StencilApp(HINSTANCE hInstance)
@@ -662,13 +678,7 @@ void StencilApp::LoadTextures()
 
     for(auto& texture : textures)
     {
-        auto texData = std::make_unique<DirectXHelper::Texture>();
-        texData->Name = texture.TextureFile.TextureName;
-        texData->Filename = texture.TextureFile.TextureFileUrl;
-        texData->Resource = texture.Texture;
-        texData->UploadHeap = texture.TextureUploadHeap;
-
-        mTextures[texData->Name] = std::move(texData);
+        AddTexture(texture);
     }
 }
 
@@ -711,48 +721,32 @@ void StencilApp::BuildRootSignature()
 void StencilApp::BuildDescriptorHeaps()
 {
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-    srvHeapDesc.NumDescriptors = 4;
+    srvHeapDesc.NumDescriptors = mMaxSrvHeapSize;
     srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(mSrvDescriptorHeap.GetAddressOf())));
 
     CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
 
-    auto bricksTex = mTextures[L"bricksTex"]->Resource;
-
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc.Format = bricksTex->GetDesc().Format;
     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Texture2D.MostDetailedMip = 0;
-    srvDesc.Texture2D.MipLevels = bricksTex->GetDesc().MipLevels;
     srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
-    md3dDevice->CreateShaderResourceView(bricksTex.Get(), &srvDesc, hDescriptor);
+    for(auto& tex : mTextures)
+    {
+        srvDesc.Format = tex.second->Resource->GetDesc().Format;
+        srvDesc.Texture2D.MipLevels = tex.second->Resource->GetDesc().MipLevels;
 
-    hDescriptor.Offset(1, mCbvSrvDescriptorSize);
+        hDescriptor.InitOffsetted(
+            mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+            tex.second->SrvHeapIndex,
+            mCbvSrvDescriptorSize
+        );
 
-    auto checkboardTex = mTextures[L"checkboardTex"]->Resource;
-    srvDesc.Format = checkboardTex->GetDesc().Format;
-    srvDesc.Texture2D.MipLevels = checkboardTex->GetDesc().MipLevels;
-
-    md3dDevice->CreateShaderResourceView(checkboardTex.Get(), &srvDesc, hDescriptor);
-
-    hDescriptor.Offset(1, mCbvSrvDescriptorSize);
-
-    auto iceTex = mTextures[L"iceTex"]->Resource;
-    srvDesc.Format = iceTex->GetDesc().Format;
-    srvDesc.Texture2D.MipLevels = iceTex->GetDesc().MipLevels;
-
-    md3dDevice->CreateShaderResourceView(iceTex.Get(), &srvDesc, hDescriptor);
-
-    hDescriptor.Offset(1, mCbvSrvDescriptorSize);
-
-    auto white1x1Tex = mTextures[L"white1x1Tex"]->Resource;
-    srvDesc.Format = white1x1Tex->GetDesc().Format;
-    srvDesc.Texture2D.MipLevels = white1x1Tex->GetDesc().MipLevels;
-
-    md3dDevice->CreateShaderResourceView(white1x1Tex.Get(), &srvDesc, hDescriptor);
+        md3dDevice->CreateShaderResourceView(tex.second->Resource.Get(), &srvDesc, hDescriptor);
+    }
 
     D3D12_DESCRIPTOR_HEAP_DESC samplerHeapDesc = {};
     samplerHeapDesc.NumDescriptors = 1;
@@ -1199,66 +1193,123 @@ void StencilApp::BuildFrameResources()
 {
     for(int i = 0; i < gNumFrameResources; i++)
     {
-        mFrameResources.push_back(std::make_unique<FrameResource>(md3dDevice.Get(), 2, (UINT)mAllRItems.size(), (UINT)mMaterials.size()));
+        mFrameResources.push_back(std::make_unique<FrameResource>(md3dDevice.Get(), 2, (UINT)mMaxRenderItemNumber, (UINT)mMaxMaterialNumber));
     }
 }
 
 void StencilApp::BuildMaterials()
 {
-    std::unique_ptr<DirectXHelper::Material> bricks = std::make_unique<DirectXHelper::Material>();
-    bricks->Name = L"bricks";
-    bricks->MatCBIndex = 0;
-    bricks->DiffuseSrvHeapIndex = 0;
-    bricks->NumFramesDirty = gNumFrameResources;
-    bricks->DiffuseAlbedo = float4(1.0f, 1.0f, 1.0f, 1.0f);
-    bricks->FresnelR0 = float3(0.05f, 0.05f, 0.05f);
-    bricks->Roughness = 0.8f;
+    DirectXHelper::MaterialConstants matConst;
 
-    std::unique_ptr<DirectXHelper::Material> checkerboard = std::make_unique<DirectXHelper::Material>();
-    checkerboard->Name = L"checkerboard";
-    checkerboard->MatCBIndex = 1;
-    checkerboard->DiffuseSrvHeapIndex = 1;
-    checkerboard->NumFramesDirty = gNumFrameResources;
-    checkerboard->DiffuseAlbedo = float4(1.0f, 1.0f, 1.0f, 1.0f);
-    checkerboard->FresnelR0 = float3(0.07f, 0.07f, 0.07f);
-    checkerboard->Roughness = 0.3f;
+    matConst.DiffuseAlbedo = float4(1.0f, 1.0f, 1.0f, 1.0f);
+    matConst.FresnelR0 = float3(0.05f, 0.05f, 0.05f);
+    matConst.Roughness = 0.8f;
+    AddMaterial(L"bricks", L"bricksTex", matConst);
 
-    std::unique_ptr<DirectXHelper::Material> icemirror = std::make_unique<DirectXHelper::Material>();
-    icemirror->Name = L"icemirror";
-    icemirror->MatCBIndex = 2;
-    icemirror->DiffuseSrvHeapIndex = 2;
-    icemirror->NumFramesDirty = gNumFrameResources;
-    icemirror->DiffuseAlbedo = float4(1.0f, 1.0f, 1.0f, 0.3f);
-    icemirror->FresnelR0 = float3(0.1f, 0.1f, 0.1f);
-    icemirror->Roughness = 0.05f;
+    matConst.DiffuseAlbedo = float4(1.0f, 1.0f, 1.0f, 1.0f);
+    matConst.FresnelR0 = float3(0.07f, 0.07f, 0.07f);
+    matConst.Roughness = 0.3f;
+    AddMaterial(L"checkerboard", L"checkboardTex", matConst);
 
-    std::unique_ptr<DirectXHelper::Material> skullMat = std::make_unique<DirectXHelper::Material>();
-    skullMat->Name = L"skullMat";
-    skullMat->MatCBIndex = 3;
-    skullMat->DiffuseSrvHeapIndex = 3;
-    skullMat->NumFramesDirty = gNumFrameResources;
-    skullMat->DiffuseAlbedo = float4(1.0f, 1.0f, 1.0f, 1.0f);
-    skullMat->FresnelR0 = float3(0.05f, 0.05f, 0.05f);
-    skullMat->Roughness = 0.3f;
+    matConst.DiffuseAlbedo = float4(1.0f, 1.0f, 1.0f, 0.3f);
+    matConst.FresnelR0 = float3(0.1f, 0.1f, 0.1f);
+    matConst.Roughness = 0.05f;
+    AddMaterial(L"icemirror", L"iceTex", matConst);
 
-    std::unique_ptr<DirectXHelper::Material> shadowMat = std::make_unique<DirectXHelper::Material>();
-    shadowMat->Name = L"shadowMat";
-    shadowMat->MatCBIndex = 4;
-    shadowMat->DiffuseSrvHeapIndex = 3;
-    shadowMat->NumFramesDirty = gNumFrameResources;
-    shadowMat->DiffuseAlbedo = float4(0.0f, 0.0f, 0.0f, 0.5f);
-    shadowMat->FresnelR0 = float3(0.001f, 0.001f, 0.001f);
-    shadowMat->Roughness = 1.0f;
+    matConst.DiffuseAlbedo = float4(1.0f, 1.0f, 1.0f, 1.0f);
+    matConst.FresnelR0 = float3(0.05f, 0.05f, 0.05f);
+    matConst.Roughness = 0.3f;
+    AddMaterial(L"skullMat", L"white1x1Tex", matConst);
 
-    mMaterials[L"bricks"] = std::move(bricks);
-    mMaterials[L"checkerboard"] = std::move(checkerboard);
-    mMaterials[L"icemirror"] = std::move(icemirror);
-    mMaterials[L"skullMat"] = std::move(skullMat);
-    mMaterials[L"shadowMat"] = std::move(shadowMat);
+    matConst.DiffuseAlbedo = float4(0.0f, 0.0f, 0.0f, 0.5f);
+    matConst.FresnelR0 = float3(0.001f, 0.001f, 0.001f);
+    matConst.Roughness = 1.0f;
+    AddMaterial(L"shadowMat", L"white1x1Tex", matConst);
 }
 
 void StencilApp::BuildRenderItems()
 {
+    float4x4 world = DirectXHelper::Math::Identity4X4();
+    float4x4 texTransform = DirectXHelper::Math::Identity4X4();
+
+    AddRenderItem(
+        RenderLayer::Opaque,
+        L"roomGeo",
+        L"floor",
+        L"checkerboard",
+        world,
+        texTransform
+    );
+
+    float4x4 mirrorReflect = {};
+    XMVECTOR mirrorPlane = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+    XMMATRIX R = XMMatrixReflect(mirrorPlane);
+    XMStoreFloat4x4(&mirrorReflect, R);
+
+    AddRenderItem(
+        RenderLayer::OpaqueReflected,
+        L"roomGeo",
+        L"floor",
+        L"checkerboard",
+        mirrorReflect,
+        texTransform
+    );
+
+    AddRenderItem(
+        RenderLayer::Opaque,
+        L"roomGeo",
+        L"wall",
+        L"bricks",
+        world,
+        texTransform
+    );
+
+    mSkullRitem = AddRenderItem(
+        RenderLayer::Opaque,
+        L"skullGeo",
+        L"skull",
+        L"skullMat",
+        world,
+        texTransform
+    );
+
+    mReflectedSkullRitem = AddRenderItem(
+        RenderLayer::OpaqueReflected,
+        L"skullGeo",
+        L"skull",
+        L"skullMat",
+        world,
+        texTransform
+    );
+
+    mShadowedSkullRitem = AddRenderItem(
+        RenderLayer::Shadow,
+        L"skullGeo",
+        L"skull",
+        L"shadowMat",
+        world,
+        texTransform
+    );
+
+    AddRenderItem(
+        RenderLayer::Mirrors,
+        L"roomGeo",
+        L"mirror",
+        L"icemirror",
+        world,
+        texTransform
+    );
+
+    AddRenderItem(
+        RenderLayer::Transparent,
+        L"roomGeo",
+        L"mirror",
+        L"icemirror",
+        world,
+        texTransform
+    );
+
+    /*
     std::unique_ptr<RenderItem> floorRitem = std::make_unique<RenderItem>();
     floorRitem->World = DirectXHelper::Math::Identity4X4();
     floorRitem->TexTransform = DirectXHelper::Math::Identity4X4();
@@ -1344,6 +1395,7 @@ void StencilApp::BuildRenderItems()
     mAllRItems.push_back(std::move(reflectedSkullRitem));
     mAllRItems.push_back(std::move(shadowSkullRitem));
     mAllRItems.push_back(std::move(mirrorRitem));
+    */
 }
 
 void StencilApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*>& rItems)
@@ -1374,6 +1426,59 @@ void StencilApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::
 
         cmdList->DrawIndexedInstanced(ri->IndexCount, 1, ri->StartIndexLocation, ri->BaseVertexLocation, 0);
     }
+}
+
+void StencilApp::AddTexture(DDS_TEXTURE& texture)
+{
+    auto texData = std::make_unique<DirectXHelper::Texture>();
+    texData->Name = texture.TextureFile.TextureName;
+    texData->Filename = texture.TextureFile.TextureFileUrl;
+    texData->SrvHeapIndex = mMaxSrvHeapSize;
+    texData->Resource = texture.Texture;
+    texData->UploadHeap = texture.TextureUploadHeap;
+
+    mMaxSrvHeapSize++;
+
+    mTextures[texData->Name] = std::move(texData);
+}
+
+void StencilApp::AddMaterial(LPCWSTR name, LPCWSTR diffuseTexture, DirectXHelper::MaterialConstants& matConst)
+{
+    std::unique_ptr<DirectXHelper::Material> mat = std::make_unique<DirectXHelper::Material>();
+    mat->Name = name;
+    mat->MatCBIndex = mMaxMaterialNumber;
+    mat->DiffuseSrvHeapIndex = mTextures[diffuseTexture]->SrvHeapIndex;
+    mat->NumFramesDirty = gNumFrameResources;
+    mat->DiffuseAlbedo = matConst.DiffuseAlbedo;
+    mat->FresnelR0 = matConst.FresnelR0;
+    mat->Roughness = matConst.Roughness;
+    mat->MatTransform = matConst.MatTransform;
+
+    mMaxMaterialNumber++;
+
+    mMaterials[mat->Name] = std::move(mat);
+}
+
+RenderItem* StencilApp::AddRenderItem(RenderLayer layer, LPCWSTR geometry, LPCWSTR subgeometry, LPCWSTR material, float4x4& worldTransform, float4x4& textureTransform, D3D12_PRIMITIVE_TOPOLOGY primitiveType)
+{
+    std::unique_ptr<RenderItem> renderItem = std::make_unique<RenderItem>();
+    renderItem->World = worldTransform;
+    renderItem->TexTransform = textureTransform;
+    renderItem->ObjCBIndex = mMaxRenderItemNumber;
+    renderItem->Mat = mMaterials[material].get();
+    renderItem->Geo = mGeometries[geometry].get();
+    renderItem->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    renderItem->IndexCount = renderItem->Geo->DrawArgs[subgeometry].IndexCount;
+    renderItem->StartIndexLocation = renderItem->Geo->DrawArgs[subgeometry].StartIndexLocation;
+    renderItem->BaseVertexLocation = renderItem->Geo->DrawArgs[subgeometry].BaseVertexLocation;
+
+    mMaxRenderItemNumber++;
+
+    mRItemLayer[(int)layer].push_back(renderItem.get());
+    RenderItem* ret = renderItem.get();
+    mAllRItems.push_back(std::move(renderItem));
+
+    return ret;
 }
 
 #endif

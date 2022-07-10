@@ -456,6 +456,8 @@ namespace DirectXHelper
         std::wstring Name;
         std::wstring Filename;
 
+        int SrvHeapIndex = -1;
+
         Microsoft::WRL::ComPtr<ID3D12Resource> Resource = nullptr;
         Microsoft::WRL::ComPtr<ID3D12Resource> UploadHeap = nullptr;
     };
