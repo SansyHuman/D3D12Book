@@ -101,6 +101,7 @@ namespace DirectX
     {
         LPCWSTR TextureName;
         LPCWSTR TextureFileUrl;
+        D3D12_SRV_DIMENSION Dimension;
     };
 
     struct DDS_TEXTURE_RAW

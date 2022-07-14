@@ -3,7 +3,7 @@
 
 #include "Common/framework.h"
 #include "Common/d3dApp.h"
-#include "StencilApp.h"
+#include "VecAdd.h"
 #include "Chapter4.h"
 #include <crtdbg.h>
 
@@ -17,7 +17,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
     try
     {
-        StencilApp app(hInstance);
+        VecAdd app(hInstance);
         if(!app.Initialize(D3DApp::D3DAPP_SETTINGS::Default(D3D_FEATURE_LEVEL_11_0, 4)))
         {
             return -1;

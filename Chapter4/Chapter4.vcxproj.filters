@@ -110,6 +110,12 @@
     <ClInclude Include="StencilApp.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="TreeBillboardApp.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="VecAdd.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <CopyFileToFolders Include="Shaders\Box.hlsl">
@@ -242,6 +248,12 @@
       <Filter>Resource Files\Textures</Filter>
     </CopyFileToFolders>
     <CopyFileToFolders Include="Shaders\TexLighting.hlsl">
+      <Filter>Source Files\Shaders</Filter>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="Shaders\TreeSprite.hlsl">
+      <Filter>Source Files\Shaders</Filter>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="Shaders\VecAdd.hlsl">
       <Filter>Source Files\Shaders</Filter>
     </CopyFileToFolders>
   </ItemGroup>

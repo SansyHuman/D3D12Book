@@ -312,6 +312,9 @@ bool D3DApp::InitDirect3D()
     CreateSwapChain();
     CreateRtvAndDsvDescriptorHeaps();
 
+    CreateD3D11On12Device();
+    CreateD2DObjects();
+
     return true;
 }
 
@@ -443,21 +446,92 @@ void D3DApp::CreateRtvAndDsvDescriptorHeaps()
     ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&dsvDesc, IID_PPV_ARGS(mDsvHeap.GetAddressOf())));
 }
 
+void D3DApp::CreateD3D11On12Device()
+{
+    ComPtr<ID3D11Device> d3d11Device;
+    ThrowIfFailed(D3D11On12CreateDevice(
+        (IUnknown*)md3dDevice.Get(),
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+        nullptr,
+        0,
+        (IUnknown**)mCommandQueue.GetAddressOf(),
+        1,
+        0,
+        d3d11Device.GetAddressOf(),
+        md3d11DeviceContext.GetAddressOf(),
+        nullptr
+    ));
+
+    ThrowIfFailed(d3d11Device.As(&md3d11On12Device));
+}
+
+void D3DApp::CreateD2DObjects()
+{
+    D2D1_DEVICE_CONTEXT_OPTIONS deviceOptions = D2D1_DEVICE_CONTEXT_OPTIONS_ENABLE_MULTITHREADED_OPTIMIZATIONS;
+    ThrowIfFailed(D2D1CreateFactory(
+        D2D1_FACTORY_TYPE_MULTI_THREADED,
+        IID_PPV_ARGS(md2dFactory.GetAddressOf())
+    ));
+
+    ComPtr<IDXGIDevice> dxgiDevice;
+    ThrowIfFailed(md3d11On12Device.As(&dxgiDevice));
+    ThrowIfFailed(md2dFactory->CreateDevice(dxgiDevice.Get(), md2dDevice.GetAddressOf()));
+    ThrowIfFailed(md2dDevice->CreateDeviceContext(deviceOptions, md2dDeviceContext.GetAddressOf()));
+
+    ThrowIfFailed(DWriteCreateFactory(
+        DWRITE_FACTORY_TYPE_SHARED,
+        __uuidof(IDWriteFactory),
+        (IUnknown**)mdwriteFactory.GetAddressOf()
+    ));
+}
+
 void D3DApp::CreateRtv()
 {
+    md2dDeviceContext->SetTarget(nullptr);
+
+    for(size_t i = 0; i < mSwapChainBuffers.size(); i++)
+    {
+        md2dRenderTargets[i].Reset();
+    }
+
+    for(size_t i = 0; i < mSwapChainBuffers.size(); i++)
+    {
+        md3d11On12Device->ReleaseWrappedResources(mWrappedBackBuffers[i].GetAddressOf(), 1);
+        mWrappedBackBuffers[i].Reset();
+    }
+
     for(size_t i = 0; i < mSwapChainBuffers.size(); i++)
     {
         mSwapChainBuffers[i].Reset();
     }
+
+    md2dRenderTargets.resize(mSwapChainBufferCount);
+    mWrappedBackBuffers.resize(mSwapChainBufferCount);
     mSwapChainBuffers.resize(mSwapChainBufferCount);
 
-    ThrowIfFailed(mSwapChain->ResizeBuffers(
-        mSwapChainBufferCount,
-        mClientWidth, mClientHeight,
-        mBackBufferFormat,
-        DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH
-    ));
+    md3d11DeviceContext->ClearState();
 
+    while(true)
+    {
+        try
+        {
+            ThrowIfFailed(mSwapChain->ResizeBuffers(
+                mSwapChainBufferCount,
+                mClientWidth, mClientHeight,
+                mBackBufferFormat,
+                DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH
+            ));
+            break;
+        }
+        catch(DirectXHelper::DxException& e)
+        {
+            if(e.ErrorCode == DXGI_ERROR_INVALID_CALL)
+                continue;
+            else
+                throw e;
+        }
+    }
+    
     mCurrentBackBuffer = 0;
 
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHeapHandle(mRtvHeap->GetCPUDescriptorHandleForHeapStart());
@@ -512,6 +586,39 @@ void D3DApp::CreateDsv()
     md3dDevice->CreateDepthStencilView(mDepthStencilBuffer.Get(), &dsvDesc, DepthStencilView());
 }
 
+void D3DApp::CreateD2DRenderTarget()
+{
+    float dpiX = (float)mClientWidth * 96.0f / mClientHorizontalDIP;
+    float dipY = mClientHorizontalDIP * (float)mClientHeight / (float)mClientWidth;
+    float dpiY = (float)mClientHeight * 96.0f / dipY;
+    D2D1_BITMAP_PROPERTIES1 bitmapProperties = D2D1::BitmapProperties1(
+        D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+        D2D1::PixelFormat(DXGI_FORMAT_UNKNOWN, D2D1_ALPHA_MODE_PREMULTIPLIED),
+        dpiX,
+        dpiY
+    );
+
+    for(UINT i = 0; i < mSwapChainBufferCount; i++)
+    {
+        D3D11_RESOURCE_FLAGS d3d11Flags = { D3D11_BIND_RENDER_TARGET };
+        ThrowIfFailed(md3d11On12Device->CreateWrappedResource(
+            (IUnknown*)mSwapChainBuffers[i].Get(),
+            &d3d11Flags,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_PRESENT,
+            IID_PPV_ARGS(mWrappedBackBuffers[i].GetAddressOf())
+        ));
+
+        ComPtr<IDXGISurface> surface;
+        ThrowIfFailed(mWrappedBackBuffers[i].As(&surface));
+        ThrowIfFailed(md2dDeviceContext->CreateBitmapFromDxgiSurface(
+            surface.Get(),
+            &bitmapProperties,
+            md2dRenderTargets[i].GetAddressOf()
+        ));
+    }
+}
+
 void D3DApp::FlushCommandQueue()
 {
     mCurrentFence++;
@@ -532,11 +639,12 @@ void D3DApp::FlushCommandQueue()
 void D3DApp::OnResize()
 {
     FlushCommandQueue();
-
+    
     ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
 
     CreateRtv();
     CreateDsv();
+    CreateD2DRenderTarget();
 
     D3D12_RESOURCE_BARRIER dsvTransition = CD3DX12_RESOURCE_BARRIER::Transition(
         mDepthStencilBuffer.Get(),
@@ -627,6 +735,14 @@ void D3DApp::CalculateFrameStats()
         L"  fps: " + std::to_wstring(fps) +
         L"  mspf: " + std::to_wstring(mspf) +
         L"  timescale: " + std::to_wstring(mTimer.GetTimescale());
+
+    std::wstring fpsT = std::to_wstring(roundf(fps * 10.0f) / 10.0f);
+    std::wstring mspfT = std::to_wstring(roundf(mspf * 100.0f) / 100.0f);
+    fpsT.resize(fpsT.find_first_of(L'.') + 2);
+    mspfT.resize(mspfT.find_first_of(L'.') + 3);
+
+    mFpsText = L"fps: " + fpsT +
+        L" mspf: " + mspfT;
 
     SetWindowTextW(mhMainWnd, windowText.c_str());
 }

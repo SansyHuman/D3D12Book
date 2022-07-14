@@ -455,6 +455,7 @@ namespace DirectXHelper
     {
         std::wstring Name;
         std::wstring Filename;
+        D3D12_SRV_DIMENSION Dimension;
 
         int SrvHeapIndex = -1;
 

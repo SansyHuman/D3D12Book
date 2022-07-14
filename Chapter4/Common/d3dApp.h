@@ -29,6 +29,14 @@ protected:
 
     D3D_FEATURE_LEVEL mFeatureLevel = D3D_FEATURE_LEVEL_11_0;
     ComPtr<ID3D12Device> md3dDevice;
+    ComPtr<ID3D11DeviceContext> md3d11DeviceContext;
+    ComPtr<ID3D11On12Device> md3d11On12Device;
+
+    ComPtr<ID2D1Factory3> md2dFactory;
+    ComPtr<ID2D1Device2> md2dDevice;
+    ComPtr<ID2D1DeviceContext2> md2dDeviceContext;
+
+    ComPtr<IDWriteFactory> mdwriteFactory;
 
     ComPtr<ID3D12Fence> mFence;
     UINT64 mCurrentFence = 0;
@@ -50,10 +58,14 @@ protected:
 
     int mCurrentBackBuffer = 0;
     std::vector<ComPtr<ID3D12Resource>> mSwapChainBuffers;
+    std::vector<ComPtr<ID3D11Resource>> mWrappedBackBuffers;
+    std::vector<ComPtr<ID2D1Bitmap1>> md2dRenderTargets;
     ComPtr<ID3D12Resource> mDepthStencilBuffer;
 
     D3D12_VIEWPORT mScreenViewport = {};
     D3D12_RECT mScissorRect = {};
+
+    std::wstring mFpsText = L"fps: mspf: ";
 
     std::wstring mMainWndCaption = L"d3d App";
     D3D_DRIVER_TYPE md3dDriverType = D3D_DRIVER_TYPE_HARDWARE;
@@ -62,6 +74,7 @@ protected:
     UINT mSwapChainBufferCount = 2;
     UINT mClientWidth = 800;
     UINT mClientHeight = 600;
+    float mClientHorizontalDIP = 1600.0f;
     DXGI_RATIONAL mRefreshRate = { 60, 1 };
 
 protected:
@@ -132,8 +145,12 @@ protected:
     void CreateSwapChain();
     virtual void CreateRtvAndDsvDescriptorHeaps();
 
+    void CreateD3D11On12Device();
+    void CreateD2DObjects();
+
     void CreateRtv();
     void CreateDsv();
+    void CreateD2DRenderTarget();
     void FlushCommandQueue();
 
     virtual void OnResize();
@@ -144,6 +161,7 @@ protected:
     virtual void LateUpdate(GameTimer<float>& gt) {}
 
     virtual void Draw(const GameTimer<float>& gt) {}
+    virtual void RenderUI(const GameTimer<float>& gt) {}
 
     virtual void OnAppPause() {}
 
